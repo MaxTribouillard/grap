@@ -183,7 +183,7 @@ export function Desk() {
     try {
       const result = await scrape({
         pisteId: selectedId,
-        mode: "simulate",
+        mode: "fetch",
         count: 20,
       });
       setScrapeNotice(

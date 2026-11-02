@@ -1,12 +1,12 @@
 /**
  * Scraper module for LeBonCoin listings.
  *
- * Fetches listings by category/keywords, parses structured data
- * (title, description, price, city, url), and feeds them into
- * the existing Convex analysis pipeline.
+ * Uses the internal LeBonCoin JSON API (api.leboncoin.fr/finder/search)
+ * instead of HTML scraping. Returns structured JSON with listing data,
+ * bypassing most DataDome friction since it mimics the mobile app traffic.
  *
  * Two modes:
- *  - "fetch"    — live HTTP scraping (needs a headless browser or proxy)
+ *  - "fetch"    — live API call to LeBonCoin
  *  - "simulate" — local simulation with realistic sample data
  *
  * The Convex action `scraper.scrape` orchestrates everything.
@@ -40,85 +40,80 @@ export type ScrapeResult = {
   listingIds: Id<"listings">[];
 };
 
-// ─── Category → LeBonCoin mapping ────────────────────────────────────
+// ─── Category → LeBonCoin API mapping ────────────────────────────────
 
-const CATEGORY_MAP: Record<
+const CATEGORY_API: Record<
   ScrapeCategory,
-  { lbcCategory: string; searchTerms: string[] }
+  { category: string; searchTerms: string[] }
 > = {
   "pc-gamer": {
-    lbcCategory: "13", // Informatique
+    category: "13", // Informatique
     searchTerms: ["pc gamer", "tour gamer", "pc gaming rtx"],
   },
   "velo-course": {
-    lbcCategory: "161", // Vélos
+    category: "161", // Vélos
     searchTerms: ["vélo route", "velo course carbone", "velo route Shimano"],
   },
   autre: {
-    lbcCategory: "0", // Toutes catégories
+    category: "0", // Toutes catégories
     searchTerms: [],
   },
 };
 
-// ─── Live fetch (runs in Convex action) ──────────────────────────────
+// ─── LeBonCoin internal API (JSON) ───────────────────────────────────
 
-async function fetchSearchPage(
+async function searchListings(
   category: string,
   searchTerm: string,
   maxPrice: number,
 ): Promise<RawListing[]> {
-  const url = new URL("https://www.leboncoin.fr/recherche");
-  url.searchParams.set("category", category);
-  url.searchParams.set("text", searchTerm);
-  url.searchParams.set("price_max", String(maxPrice));
-  url.searchParams.set("locations", "France");
-  url.searchParams.set("sort", "0"); // Most recent
+  const apiUrl = "https://api.leboncoin.fr/finder/search";
 
-  const response = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(25000),
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "fr-FR,fr;q=0.9",
-      "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Mode": "navigate",
+  const body = JSON.stringify({
+    domain_id: category === "13" ? 12 : category === "161" ? 20 : 1,
+    category_id: category,
+    q: searchTerm,
+    sort: "pca",
+    f: {
+      price_max: maxPrice,
     },
   });
 
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    signal: AbortSignal.timeout(30000),
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "Accept-Language": "fr-FR,fr;q=0.9",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-site",
+      Origin: "https://www.leboncoin.fr",
+      Referer: "https://www.leboncoin.fr/",
+    },
+    body,
+  });
+
   if (!response.ok) {
-    console.warn(`[scraper] fetch blocked (${response.status}) for "${searchTerm}"`);
+    console.warn(
+      `[scraper] API returned ${response.status} for "${searchTerm}"`,
+    );
     return [];
   }
 
-  const html = await response.text();
-  return parseListings(html);
-}
+  const json = (await response.json()) as Record<string, unknown>;
+  const items = (json.results as any[]) ?? [];
 
-// ─── HTML parser ─────────────────────────────────────────────────────
-
-function parseListings(html: string): RawListing[] {
-  const listings: RawListing[] = [];
-
-  const listingRegex =
-    /<a[^>]*href="([^"]*\/offres\/[0-9]+[^"]*)"[^>]*>.*?<span[^>]*class="[^"]*title[^"]*"[^>]*>(.*?)<\/span>.*?<span[^>]*class="[^"]*price[^"]*"[^>]*>([\d,]+)\s*€?<\/span>/gs;
-
-  let match;
-  while ((match = listingRegex.exec(html)) !== null) {
-    const [, url, title, priceStr] = match;
-    const price = Number(priceStr.replace(/\s/g, "").replace(",", "."));
-    if (title && price > 0) {
-      listings.push({
-        title: title.trim().replace(/\s+/g, " "),
-        description: "",
-        askingPrice: Math.round(price),
-        city: "",
-        url,
-      });
-    }
-  }
-
-  return listings;
+  return items.map((item: any) => ({
+    title: item.attr?.title ?? item.title ?? "Sans titre",
+    description: item.attr?.body ?? item.description ?? "",
+    askingPrice: item.price ?? 0,
+    city: item.locations?.[0]?.cityName ?? "",
+    url: item.url ?? `https://www.leboncoin.fr/offres/${item.id}`,
+  }));
 }
 
 // ─── Simulated data (dev / fallback) ─────────────────────────────────
@@ -449,20 +444,21 @@ export const scrape = action({
         ? piste.category
         : "autre";
 
-    const mode = args.mode ?? "simulate";
+    // Default to "fetch" — live API is the primary path
+    const mode = args.mode ?? "fetch";
     const count = args.count ?? 20;
     const listings: RawListing[] = [];
 
     if (mode === "fetch") {
-      const config = CATEGORY_MAP[category];
+      const config = CATEGORY_API[category];
       const searchTerms =
         category === "autre" && piste.keywords.length > 0
           ? piste.keywords
           : config.searchTerms;
 
       for (const term of searchTerms) {
-        const results = await fetchSearchPage(
-          config.lbcCategory,
+        const results = await searchListings(
+          config.category,
           term,
           piste.maxAskingPrice,
         );
