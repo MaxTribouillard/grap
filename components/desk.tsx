@@ -101,6 +101,7 @@ export function Desk() {
   const removePiste = useMutation(api.pistes.remove);
   const removeListing = useMutation(api.listings.remove);
   const review = useAction(api.analyze.review);
+  const scrape = useAction(api.scraper.scrape);
 
   const [pisteId, setPisteId] = useState<Id<"pistes"> | "">("");
   const [title, setTitle] = useState("");
@@ -110,9 +111,11 @@ export function Desk() {
   const [city, setCity] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scraping, setScraping] = useState(false);
   const [error, setError] = useState("");
   const [highlight, setHighlight] = useState<Id<"listings"> | null>(null);
   const [notice, setNotice] = useState("");
+  const [scrapeNotice, setScrapeNotice] = useState("");
 
   const [pisteName, setPisteName] = useState("");
   const [pisteCategory, setPisteCategory] = useState<Category>("autre");
@@ -166,6 +169,31 @@ export function Desk() {
       setError(caught instanceof Error ? caught.message : "Le tri a échoué.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runScrape() {
+    if (!selectedId) {
+      setError("Choisis une piste.");
+      return;
+    }
+    setScraping(true);
+    setScrapeNotice("Recherche en cours…");
+    setError("");
+    try {
+      const result = await scrape({
+        pisteId: selectedId,
+        mode: "simulate",
+        count: 20,
+      });
+      setScrapeNotice(
+        `Done — ${result.scraped} analysées, ${result.kept} gardées, ${result.discarded} écartées.`,
+      );
+    } catch (caught) {
+      setScrapeNotice("");
+      setError(caught instanceof Error ? caught.message : "Le scraping a échoué.");
+    } finally {
+      setScraping(false);
     }
   }
 
@@ -332,11 +360,23 @@ export function Desk() {
             </button>
           </form>
 
+          <button
+            type="button"
+            onClick={() => void runScrape()}
+            disabled={scraping || !pistes}
+            className="mt-3 w-full border border-line px-3 py-3 font-semibold text-muted disabled:opacity-50 hover:border-gain hover:text-foreground"
+          >
+            {scraping ? "Scraping en cours…" : "🔍 Scanner Le Bon Coin"}
+          </button>
+
           {error ? (
             <p className="mt-3 text-sm leading-6 text-loss">{error}</p>
           ) : null}
           {notice ? (
             <p className="mt-3 text-sm leading-6 text-foreground">{notice}</p>
+          ) : null}
+          {scrapeNotice ? (
+            <p className="mt-3 text-sm leading-6 text-gain">{scrapeNotice}</p>
           ) : null}
 
           <details className="mt-6 border-t border-line pt-4">
