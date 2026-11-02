@@ -12,6 +12,7 @@ import type * as analyze from "../analyze.js";
 import type * as listings from "../listings.js";
 import type * as pistes from "../pistes.js";
 import type * as pricing from "../pricing.js";
+import type * as scraper from "../scraper.js";
 import type * as validators from "../validators.js";
 
 import type {
@@ -25,6 +26,7 @@ declare const fullApi: ApiFromModules<{
   listings: typeof listings;
   pistes: typeof pistes;
   pricing: typeof pricing;
+  scraper: typeof scraper;
   validators: typeof validators;
 }>;
 
